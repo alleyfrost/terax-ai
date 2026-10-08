@@ -20,6 +20,11 @@ struct LaunchDir(Mutex<Option<String>>);
 #[derive(Default)]
 struct LaunchFiles(Mutex<Vec<String>>);
 
+/// Directory opened via the OS action on a cold start, drained once so it can
+/// land as a fresh terminal tab after boot instead of only seeding the cwd.
+#[derive(Default)]
+struct LaunchOpenDir(Mutex<Option<String>>);
+
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
     state.0.lock().expect("LaunchDir mutex poisoned").take()
@@ -28,6 +33,11 @@ fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
 #[tauri::command]
 fn get_launch_files(state: State<'_, LaunchFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().expect("LaunchFiles mutex poisoned"))
+}
+
+#[tauri::command]
+fn get_launch_open_dir(state: State<'_, LaunchOpenDir>) -> Option<String> {
+    state.0.lock().expect("LaunchOpenDir mutex poisoned").take()
 }
 
 enum LaunchEntry {
@@ -250,6 +260,7 @@ pub fn run() {
         })
         .manage(LaunchDir(Mutex::new(cli_dir)))
         .manage(LaunchFiles(Mutex::new(launch.files)))
+        .manage(LaunchOpenDir(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
@@ -324,6 +335,7 @@ pub fn run() {
             control::control_respond,
             get_launch_dir,
             get_launch_files,
+            get_launch_open_dir,
             open_settings_window,
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
@@ -368,11 +380,17 @@ pub fn run() {
                         .iter()
                         .filter_map(|u| u.to_file_path().ok())
                         .filter_map(|p| std::fs::canonicalize(p).ok())
-                        .filter(|p| p.is_file())
-                        .map(LaunchEntry::File)
+                        .filter_map(|p| {
+                            let meta = std::fs::metadata(&p).ok()?;
+                            Some(if meta.is_dir() {
+                                LaunchEntry::Dir(p)
+                            } else {
+                                LaunchEntry::File(p)
+                            })
+                        })
                         .collect();
                     let target = resolve_launch_target(entries);
-                    if target.files.is_empty() {
+                    if target.dir.is_none() && target.files.is_empty() {
                         return;
                     }
                     if let Some(dir) = &target.dir {
@@ -383,10 +401,25 @@ pub fn run() {
                             *state.0.lock().expect("LaunchDir mutex poisoned") = Some(dir.clone());
                         }
                     }
-                    if let Some(state) = app.try_state::<LaunchFiles>() {
-                        *state.0.lock().expect("LaunchFiles mutex poisoned") = target.files.clone();
+                    if target.files.is_empty() {
+                        // Directory-only open (`open -a Terax <dir>`): the
+                        // window is already up, so spawn a fresh terminal rooted
+                        // there. Warm start emits; cold start drains via
+                        // get_launch_open_dir after boot.
+                        if let Some(dir) = &target.dir {
+                            if let Some(state) = app.try_state::<LaunchOpenDir>() {
+                                *state.0.lock().expect("LaunchOpenDir mutex poisoned") =
+                                    Some(dir.clone());
+                            }
+                            let _ = app.emit("terax:open-dir", dir);
+                        }
+                    } else {
+                        if let Some(state) = app.try_state::<LaunchFiles>() {
+                            *state.0.lock().expect("LaunchFiles mutex poisoned") =
+                                target.files.clone();
+                        }
+                        let _ = app.emit("terax:open-file", target.files);
                     }
-                    let _ = app.emit("terax:open-file", target.files);
                 }
                 _ => {}
             }

@@ -22,3 +22,14 @@ export async function consumeLaunchFiles(): Promise<string[]> {
   const files = await invoke<string[]>("get_launch_files").catch(() => []);
   return files.map((f) => f.replace(/\\/g, "/"));
 }
+
+/**
+ * Drains a directory opened via the OS action on a cold start (macOS
+ * `open -a Terax <dir>`), so it can land as a fresh terminal tab after boot
+ * rather than only seeding the workspace cwd. Returns null when no directory
+ * was opened, so the launch cwd context still applies without adding a tab.
+ */
+export async function consumeLaunchOpenDir(): Promise<string | null> {
+  const dir = await invoke<string | null>("get_launch_open_dir").catch(() => null);
+  return dir ? dir.replace(/\\/g, "/") : null;
+}
