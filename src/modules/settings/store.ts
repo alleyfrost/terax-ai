@@ -4,10 +4,9 @@ import {
   DEFAULT_AUTOCOMPLETE_MODEL,
   DEFAULT_MODEL_ID,
   DEFAULT_STT_PROVIDER,
-  isKnownModelId,
+  isResolvableModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
-  type ModelId,
   migrateLegacyCompatEndpoint,
   OLLAMA_DEFAULT_BASE_URL,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
@@ -126,7 +125,7 @@ export type Preferences = {
   backgroundOpacity: number;
   backgroundBlur: number;
   windowVibrancy: boolean;
-  defaultModelId: ModelId;
+  defaultModelId: string;
   editorTheme: EditorThemePref;
   editorFontSize: number;
   customInstructions: string;
@@ -407,9 +406,11 @@ export async function loadPreferences(): Promise<Preferences> {
     backgroundBlur: clampBlur(
       get<number>(KEY_BG_BLUR) ?? DEFAULT_PREFERENCES.backgroundBlur,
     ),
-    defaultModelId: ((): ModelId => {
+    // Custom endpoints persist as `compat-<endpointId>` ids, so they are
+    // accepted here; a stale id is still the fallback.
+    defaultModelId: ((): string => {
       const stored = get<string>(KEY_DEFAULT_MODEL);
-      return stored && isKnownModelId(stored)
+      return stored && isResolvableModelId(stored)
         ? stored
         : DEFAULT_PREFERENCES.defaultModelId;
     })(),
@@ -482,12 +483,14 @@ export async function loadPreferences(): Promise<Preferences> {
     whispercppBaseURL:
       get<string>(KEY_WHISPERCPP_BASE_URL) ??
       DEFAULT_PREFERENCES.whispercppBaseURL,
+    // `compat-` endpoint ids are resolvable too; filtering them out would
+    // silently drop favorites and recents chosen in the composer.
     favoriteModelIds: (
       get<string[]>(KEY_FAVORITE_MODELS) ?? DEFAULT_PREFERENCES.favoriteModelIds
-    ).filter(isKnownModelId),
+    ).filter(isResolvableModelId),
     recentModelIds: (
       get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
-    ).filter(isKnownModelId),
+    ).filter(isResolvableModelId),
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
     editorWordWrap:
       get<boolean>(KEY_EDITOR_WORD_WRAP) ?? DEFAULT_PREFERENCES.editorWordWrap,
@@ -638,7 +641,7 @@ export async function setBackgroundBlur(value: number): Promise<void> {
   await writePref(KEY_BG_BLUR, clampBlur(value));
 }
 
-export async function setDefaultModel(value: ModelId): Promise<void> {
+export async function setDefaultModel(value: string): Promise<void> {
   await writePref(KEY_DEFAULT_MODEL, value);
 }
 

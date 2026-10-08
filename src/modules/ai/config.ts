@@ -673,6 +673,15 @@ export function isKnownModelId(id: string): id is ModelId {
   return MODELS.some((x) => x.id === id);
 }
 
+/**
+ * True when `resolveModel` resolves the id: a static catalog model, or a
+ * `compat-` endpoint id. Used to validate model ids persisted across restarts,
+ * so a custom-endpoint default survives a reload instead of reverting.
+ */
+export function isResolvableModelId(id: string): boolean {
+  return isCompatModelId(id) || isKnownModelId(id);
+}
+
 const FREEFORM_PROVIDERS: ReadonlySet<ProviderId> = new Set([
   "openrouter",
   "openai-compatible",

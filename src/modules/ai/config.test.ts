@@ -5,6 +5,7 @@ import {
   estimateCost,
   getModelContextLimit,
   isCompatModelId,
+  isResolvableModelId,
   migrateLegacyCompatEndpoint,
   modelKeepsReasoning,
   modelSupportsTemperature,
@@ -34,6 +35,36 @@ describe("compat model id helpers", () => {
   it("treats static model ids as non-compat", () => {
     expect(isCompatModelId("gpt-5.4-mini")).toBe(false);
     expect(endpointIdFromCompatModel("gpt-5.4-mini")).toBe("");
+  });
+});
+
+describe("isResolvableModelId", () => {
+  it("accepts static catalog ids", () => {
+    expect(isResolvableModelId("gpt-5.4-mini")).toBe(true);
+  });
+
+  it("accepts compat endpoint ids so a custom default survives a reload", () => {
+    expect(isResolvableModelId(compatModelIdForEndpoint(endpoint.id))).toBe(
+      true,
+    );
+  });
+
+  it("agrees with resolveModel: true exactly when it does not throw", () => {
+    for (const id of [
+      "gpt-5.4-mini",
+      "claude-opus-4-7",
+      compatModelIdForEndpoint(endpoint.id),
+      "nope-not-real",
+      "",
+    ]) {
+      let throws = false;
+      try {
+        resolveModel(id, [endpoint]);
+      } catch {
+        throws = true;
+      }
+      expect(isResolvableModelId(id)).toBe(!throws);
+    }
   });
 });
 
