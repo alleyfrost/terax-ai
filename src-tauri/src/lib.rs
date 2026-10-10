@@ -20,10 +20,12 @@ struct LaunchDir(Mutex<Option<String>>);
 #[derive(Default)]
 struct LaunchFiles(Mutex<Vec<String>>);
 
-/// Directory opened via the OS action on a cold start, drained once so it can
-/// land as a fresh terminal tab after boot instead of only seeding the cwd.
+/// Directories opened via the OS action on a cold start, drained in FIFO order
+/// so they can land as fresh terminal tabs after boot instead of only seeding
+/// the cwd. A queue rather than a single slot: two opens before the drain must
+/// both survive, not collapse to the last one.
 #[derive(Default)]
-struct LaunchOpenDir(Mutex<Option<String>>);
+struct LaunchOpenDir(Mutex<Vec<String>>);
 
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
@@ -35,9 +37,21 @@ fn get_launch_files(state: State<'_, LaunchFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().expect("LaunchFiles mutex poisoned"))
 }
 
+/// Pops the oldest queued directory. Kept free of Tauri types so it stays
+/// unit-testable.
+fn pop_next_open_dir(state: &LaunchOpenDir) -> Option<String> {
+    let mut q = state.0.lock().expect("LaunchOpenDir mutex poisoned");
+    // Not `drain(..1)`: that panics on an empty queue.
+    if q.is_empty() {
+        None
+    } else {
+        Some(q.remove(0))
+    }
+}
+
 #[tauri::command]
 fn get_launch_open_dir(state: State<'_, LaunchOpenDir>) -> Option<String> {
-    state.0.lock().expect("LaunchOpenDir mutex poisoned").take()
+    pop_next_open_dir(&state)
 }
 
 enum LaunchEntry {
@@ -190,6 +204,16 @@ pub fn run() {
 
     let launch = parse_launch_target();
     let cli_dir = launch.dir.clone();
+    // A directory launch argument gets the same fresh-tab treatment as the
+    // macOS open-files event. A dir derived from a file argument must not —
+    // that path opens the file itself and the dir is only the workspace.
+    let open_dir_from_argv: Vec<String> = launch
+        .files
+        .is_empty()
+        .then(|| cli_dir.clone())
+        .flatten()
+        .into_iter()
+        .collect();
     workspace::init_launch_cwd(cli_dir.as_deref());
     let control_state = control::ControlState::default();
     let control_for_setup = control_state.clone();
@@ -260,7 +284,7 @@ pub fn run() {
         })
         .manage(LaunchDir(Mutex::new(cli_dir)))
         .manage(LaunchFiles(Mutex::new(launch.files)))
-        .manage(LaunchOpenDir(Mutex::new(None)))
+        .manage(LaunchOpenDir(Mutex::new(open_dir_from_argv)))
         .invoke_handler(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
@@ -408,8 +432,11 @@ pub fn run() {
                         // get_launch_open_dir after boot.
                         if let Some(dir) = &target.dir {
                             if let Some(state) = app.try_state::<LaunchOpenDir>() {
-                                *state.0.lock().expect("LaunchOpenDir mutex poisoned") =
-                                    Some(dir.clone());
+                                state
+                                    .0
+                                    .lock()
+                                    .expect("LaunchOpenDir mutex poisoned")
+                                    .push(dir.clone());
                             }
                             let _ = app.emit("terax:open-dir", dir);
                         }
@@ -428,8 +455,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod launch_target_tests {
-    use super::{resolve_launch_target, settings_always_on_top, LaunchEntry, LaunchTarget};
+    use super::{
+        pop_next_open_dir, resolve_launch_target, settings_always_on_top, LaunchEntry,
+        LaunchOpenDir, LaunchTarget,
+    };
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     #[test]
     fn no_entries_resolves_to_empty() {
@@ -479,5 +510,37 @@ mod launch_target_tests {
     fn settings_float_only_outside_macos() {
         assert!(!settings_always_on_top(true));
         assert!(settings_always_on_top(false));
+    }
+
+    #[test]
+    fn open_dir_queue_pops_oldest_first() {
+        let q = LaunchOpenDir(Mutex::new(vec![
+            "/workspace/a".to_string(),
+            "/workspace/b".to_string(),
+        ]));
+        assert_eq!(pop_next_open_dir(&q), Some("/workspace/a".to_string()));
+        assert_eq!(pop_next_open_dir(&q), Some("/workspace/b".to_string()));
+    }
+
+    #[test]
+    fn open_dir_queue_is_empty_after_draining() {
+        let q = LaunchOpenDir(Mutex::new(vec![
+            "/workspace/a".to_string(),
+            "/workspace/b".to_string(),
+        ]));
+        let _ = pop_next_open_dir(&q);
+        let _ = pop_next_open_dir(&q);
+        assert_eq!(pop_next_open_dir(&q), None);
+    }
+
+    #[test]
+    fn open_dir_queue_keeps_a_later_push_after_an_earlier_drain() {
+        let q = LaunchOpenDir(Mutex::new(vec!["/workspace/a".to_string()]));
+        let _ = pop_next_open_dir(&q);
+        q.0.lock()
+            .expect("LaunchOpenDir mutex poisoned")
+            .push("/workspace/b".to_string());
+        assert_eq!(pop_next_open_dir(&q), Some("/workspace/b".to_string()));
+        assert_eq!(pop_next_open_dir(&q), None);
     }
 }

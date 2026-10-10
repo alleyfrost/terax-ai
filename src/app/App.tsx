@@ -7,7 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   consumeLaunchFiles,
-  consumeLaunchOpenDir,
+  consumeLaunchOpenDirs,
   getLaunchDir,
 } from "@/lib/launchDir";
 import { quoteShellArg } from "@/lib/shellQuote";
@@ -701,7 +701,7 @@ export default function App() {
       const off = await listen<string[]>("terax:open-file", (e) => {
         // Warm start: raise the window so the opened file is visible when the
         // app was minimized or hidden behind other windows.
-        activateMainWindow();
+        void activateMainWindow();
         openLaunchFiles(e.payload);
       });
       if (disposed) off();
@@ -719,7 +719,7 @@ export default function App() {
     let disposed = false;
     (async () => {
       const off = await listen<string>("terax:open-dir", (e) => {
-        activateMainWindow();
+        void activateMainWindow();
         openDirInNewTab(e.payload);
       });
       if (disposed) off();
@@ -741,13 +741,22 @@ export default function App() {
     if (!booted) return;
     void (async () => {
       openLaunchFiles(await consumeLaunchFiles());
-      const dir = await consumeLaunchOpenDir();
-      if (!dir) return;
-      // Skip when the default tab already landed here (first run, before spaces
-      // restore replaced it); otherwise a restored session would otherwise get
-      // no terminal at the launched directory.
-      if (tabsRef.current.some((t) => t.kind === "terminal" && t.cwd === dir)) return;
-      openDirInNewTab(dir);
+      // Drain the whole queue: a directory may arrive twice (argv seed plus
+      // the macOS open-files event) or more than once per launch, and each
+      // distinct directory gets its own tab.
+      const opened = new Set<string>();
+      for (const dir of await consumeLaunchOpenDirs()) {
+        // Skip when a tab already landed here (the seeded default terminal,
+        // an earlier request in this batch) — otherwise a restored session
+        // would otherwise get no terminal at the launched directory.
+        if (
+          opened.has(dir) ||
+          tabsRef.current.some((t) => t.kind === "terminal" && t.cwd === dir)
+        )
+          continue;
+        opened.add(dir);
+        await openDirInNewTab(dir);
+      }
     })();
   }, [booted, openLaunchFiles, openDirInNewTab]);
 
