@@ -43,28 +43,63 @@ describe("isResolvableModelId", () => {
     expect(isResolvableModelId("gpt-5.4-mini")).toBe(true);
   });
 
-  it("accepts compat endpoint ids so a custom default survives a reload", () => {
+  it("rejects unknown static ids", () => {
+    expect(isResolvableModelId("nope-not-real")).toBe(false);
+    expect(isResolvableModelId("")).toBe(false);
+  });
+
+  it("accepts a compat id whose endpoint exists and is complete", () => {
+    expect(
+      isResolvableModelId(compatModelIdForEndpoint(endpoint.id), [endpoint]),
+    ).toBe(true);
+  });
+
+  it("rejects a compat id whose endpoint no longer exists", () => {
+    expect(
+      isResolvableModelId(compatModelIdForEndpoint("missing"), [endpoint]),
+    ).toBe(false);
+  });
+
+  it("rejects a compat id whose endpoint is still incomplete", () => {
+    expect(
+      isResolvableModelId(compatModelIdForEndpoint(endpoint.id), [
+        { ...endpoint, baseURL: "   " },
+      ]),
+    ).toBe(false);
+    expect(
+      isResolvableModelId(compatModelIdForEndpoint(endpoint.id), [
+        { ...endpoint, modelId: "" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("treats a compat id with no endpoint list as unresolved", () => {
     expect(isResolvableModelId(compatModelIdForEndpoint(endpoint.id))).toBe(
-      true,
+      false,
     );
   });
 
-  it("agrees with resolveModel: true exactly when it does not throw", () => {
-    for (const id of [
-      "gpt-5.4-mini",
-      "claude-opus-4-7",
-      compatModelIdForEndpoint(endpoint.id),
-      "nope-not-real",
-      "",
-    ]) {
-      let throws = false;
-      try {
-        resolveModel(id, [endpoint]);
-      } catch {
-        throws = true;
-      }
-      expect(isResolvableModelId(id)).toBe(!throws);
+  it("agrees with the picker: a compat id resolves iff its endpoint is complete", () => {
+    // `isConfigured` and `DefaultModelPicker` both keep only endpoints with a
+    // non-empty baseURL and modelId. The persisted-id validator must agree,
+    // or the default is kept while the picker hides every option for it.
+    // resolveModel cannot serve as this reference — it returns a placeholder
+    // for a missing endpoint and never throws for a compat id.
+    const pickerComplete = (e: CustomEndpoint) =>
+      e.baseURL.trim() !== "" && e.modelId.trim() !== "";
+    const eps: CustomEndpoint[] = [
+      endpoint,
+      { ...endpoint, id: "blankurl", baseURL: "   " },
+      { ...endpoint, id: "blankmodel", modelId: "" },
+    ];
+    for (const e of eps) {
+      expect(isResolvableModelId(compatModelIdForEndpoint(e.id), eps)).toBe(
+        pickerComplete(e),
+      );
     }
+    expect(isResolvableModelId(compatModelIdForEndpoint("gone"), eps)).toBe(
+      false,
+    );
   });
 });
 
